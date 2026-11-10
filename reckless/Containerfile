@@ -1,0 +1,9 @@
+# Cross-build image for the Nano 3S display programs (fb_button, nano3s_ui).
+# Base: the fork's own pinned Rust image (build.Containerfile), plus the stock
+# Debian RISC-V cross compiler with its static glibc, and the Rust target.
+FROM docker.io/library/rust:1.94-bookworm@sha256:b2fe2c0f26e0e1759752b6b2eb93b119d30a80b91304f5b18069b31ea73eaee8
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    gcc-riscv64-linux-gnu libc6-dev-riscv64-cross \
+    && rm -rf /var/lib/apt/lists/*
+RUN rustup target add riscv64gc-unknown-linux-gnu
+WORKDIR /src

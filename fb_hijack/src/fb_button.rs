@@ -57,16 +57,48 @@ fn beep(beeper: &mut File, millis: u64) {
 // "temps" cycle, since "temps" depended on cgminer's PVT_T[] stats
 // reply, which doesn't exist once mm_miner/cgminer are gone. "pizza"
 // and "ip" are stack-independent (static image, ifconfig) and stay.
-fn toggle_page() {
-    let current = fs::read_to_string(PAGE_FILE).unwrap_or_else(|_| "nano3s".to_owned());
-    let next = match current.trim() {
+// "reckless" (2026-11-10) is a second static image, shown after "pizza".
+fn next_page(current: &str) -> &'static str {
+    match current.trim() {
         "nano3s" => "nano3s-diag",
         "nano3s-diag" => "ip",
         "ip" => "pizza",
-        "pizza" => "nano3s",
+        "pizza" => "reckless",
+        "reckless" => "nano3s",
         _ => "nano3s",
-    };
+    }
+}
+
+fn toggle_page() {
+    let current = fs::read_to_string(PAGE_FILE).unwrap_or_else(|_| "nano3s".to_owned());
+    let next = next_page(&current);
     let _ = fs::write(PAGE_FILE, format!("{next}\n"));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::next_page;
+
+    // The cycle is one closed loop: every page is reached, in this order,
+    // and the walk returns to its start. The expected order is stated once.
+    const CYCLE: [&str; 5] = ["nano3s", "nano3s-diag", "ip", "pizza", "reckless"];
+
+    #[test]
+    fn button_walks_the_whole_cycle_in_order() {
+        for (i, page) in CYCLE.iter().enumerate() {
+            assert_eq!(next_page(page), CYCLE[(i + 1) % CYCLE.len()], "after {page}");
+        }
+    }
+
+    #[test]
+    fn page_file_newline_is_ignored() {
+        assert_eq!(next_page("pizza\n"), "reckless");
+    }
+
+    #[test]
+    fn unknown_page_returns_to_the_dials() {
+        assert_eq!(next_page("no-such-page"), "nano3s");
+    }
 }
 
 fn main() {

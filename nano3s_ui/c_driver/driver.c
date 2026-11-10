@@ -17,6 +17,9 @@
 
 #define PAGE_FILE "/mntapp/release/linux/app/fb_page"
 #define PIZZA_FILE "/mntapp/release/linux/app/pizza.rgb565"
+/* Second static image, shown on the page after pizza. It lives in /data
+ * because /mntapp is nearly full. */
+#define RECKLESS_FILE "/data/reckless.rgb565"
 /* Written by rtos_core/tools/mujina.c -- plain key=value lines. */
 #define NANO3S_LIVE_FILE "/tmp/nano3s_live.txt"
 /* Written by ble_setup.rs (2026-08-24) -- same key=value format. Since
@@ -739,9 +742,9 @@ static void refresh_wifi_setup(void) {
  * fb_draw.rs's Screen::load_image()+flush() for this page. Drawn once on
  * page-change only (the source image never changes, unlike the original's
  * unconditional periodic redraw). */
-static void refresh_pizza(void) {
+static void refresh_raw_image(const char *path) {
     static uint8_t pizza_buf[FB_BYTES];
-    FILE *f = fopen(PIZZA_FILE, "rb");
+    FILE *f = fopen(path, "rb");
     if (!f) {
         return;
     }
@@ -768,12 +771,21 @@ static void refresh_pizza(void) {
 
 /* ── Page-file polling loop (mirrors fb_draw.rs's run_live_nano3s()) ────── */
 
-typedef enum { PG_LIVE, PG_DIAG, PG_IP, PG_PIZZA, PG_DOOM, PG_WIFI_SETUP } page_t;
+typedef enum { PG_LIVE, PG_DIAG, PG_IP, PG_PIZZA, PG_RECKLESS, PG_DOOM, PG_WIFI_SETUP } page_t;
+
+/* Pages that are one raw image written straight to the framebuffer. LVGL
+ * must not run while one is shown, or it paints over the image. */
+static const char *raw_image_file(page_t pg) {
+    if (pg == PG_PIZZA) return PIZZA_FILE;
+    if (pg == PG_RECKLESS) return RECKLESS_FILE;
+    return NULL;
+}
 
 static page_t parse_page(const char *s) {
     if (strcmp(s, "nano3s-diag") == 0) return PG_DIAG;
     if (strcmp(s, "ip") == 0) return PG_IP;
     if (strcmp(s, "pizza") == 0) return PG_PIZZA;
+    if (strcmp(s, "reckless") == 0) return PG_RECKLESS;
     if (strcmp(s, "wifi-setup") == 0) return PG_WIFI_SETUP;
     /* "doom" fully yields /dev/fb0 -- nano3s_doom owns the panel while
      * this page is selected, same idea as the pizza page's raw-image
@@ -828,9 +840,9 @@ static void run_event_loop(void) {
 
             if (pg == PG_IP) {
                 refresh_ip();
-            } else if (pg == PG_PIZZA) {
+            } else if (raw_image_file(pg)) {
                 if (page_changed) {
-                    refresh_pizza();
+                    refresh_raw_image(raw_image_file(pg));
                 }
             } else if (pg == PG_WIFI_SETUP) {
                 refresh_wifi_setup();
@@ -845,7 +857,7 @@ static void run_event_loop(void) {
             }
         }
 
-        if (pg != PG_PIZZA) {
+        if (!raw_image_file(pg)) {
             lv_timer_handler();
         }
         usleep(POLL_INTERVAL_MS * 1000);
