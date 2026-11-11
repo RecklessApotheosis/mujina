@@ -1,0 +1,7 @@
+# Cargo config for the offline build job: crates come from the vendored
+# directory sent with the source (reckless/remote-build.sh puts it at /w/vendor).
+[source.crates-io]
+replace-with = "vendored-sources"
+
+[source.vendored-sources]
+directory = "/w/vendor"
