@@ -15,18 +15,23 @@
 # Re-running rebuilds into the same OUT_DIR; the hashes say what changed.
 #
 # Only the Supercomplex lanes carry the Rust riscv64 toolchain (Dendrite Ops,
-# 2026-11-11), so the lease is asked of that lane directly, not of the pool.
+# 2026-11-11), so the lease is asked of those lanes directly, not of the
+# pool: the first of NANO_BUILD_LANES that grants at once wins; a lane that
+# would only queue is released again at once; the round repeats every 30 s
+# for up to 10 minutes. All four lanes are one host, reached by one alias.
 # Lane tools and their rules: dendrite/working/tools/HOW-TO-REQUEST-A-LANE.md
 set -eu
 out=$(realpath -m "$1"); vendor=$(realpath "$2"); deps=""
 if [ "${3:-}" = --miner ]; then deps=$(realpath "$4"); fi
 root=$(cd "$(dirname "$0")/.." && pwd)
 
-LANE=${NANO_BUILD_LANE:-supercomplex-build}
+LANES=${NANO_BUILD_LANES:-supercomplex-build supercomplex-build2 supercomplex-build3 supercomplex-build4}
+HOST=${NANO_BUILD_HOST:-supercomplex-build}
+LANE=""
 IMAGE=${NANO_BUILD_IMAGE:-localhost/sc-build-rust:1.94.0-20261112-riscv64}
 LANEDB=${LANEDB:-/home/ronald/projects/dendrite/working/supercomplex-build-20261020/bin/lanedb}
 SR=/srv/store/build/toolchains/bin/sc-rust
-remote() { ssh -o BatchMode=yes -o ConnectTimeout=8 "$LANE" "$@"; }
+remote() { ssh -o BatchMode=yes -o ConnectTimeout=8 "$HOST" "$@"; }
 T=riscv64gc-unknown-linux-gnu/release
 if [ -n "$deps" ]; then
     MINUTES=${NANO_BUILD_MINUTES:-30}; CPUS=12; MEM=32; job=reckless/sc-rust-build-miner.sh
@@ -69,9 +74,18 @@ cp -a "$vendor" "$stage/src/vendor"
 tar -cf "$stage/src.tar" --sort=name --mtime=@0 --owner=0 --group=0 --numeric-owner -C "$stage/src" .
 src_sum=$(sha256sum "$stage/src.tar" | cut -d' ' -f1)
 
-"$LANEDB" session request "$LANE" --chit "$build" --minutes "$MINUTES" --who "$who" --wait 600 > "$stage/lease.txt"
-grep -q '^state=granted' "$stage/lease.txt" || { cat "$stage/lease.txt" >&2; echo "remote-build: no lease" >&2; exit 1; }
+tries=0
+while [ -z "$LANE" ] && [ $tries -lt 20 ]; do
+    for l in $LANES; do
+        "$LANEDB" session request "$l" --chit "$build" --minutes "$MINUTES" --who "$who" > "$stage/lease.txt" 2>&1 || true
+        if grep -q '^state=granted' "$stage/lease.txt"; then LANE=$l; break; fi
+        "$LANEDB" session release "$l" --chit "$build" --who "$who" > /dev/null 2>&1 || true
+    done
+    [ -n "$LANE" ] || { tries=$((tries + 1)); echo "remote-build: every lane busy; asking again in 30 s" >&2; sleep 30; }
+done
+[ -n "$LANE" ] || { echo "remote-build: no lane free within 10 minutes" >&2; exit 1; }
 leased=1
+echo "lane granted: $LANE"
 policy=$(sed -n 's/^on_overrun=//p' "$stage/lease.txt")
 
 put=1
