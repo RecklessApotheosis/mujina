@@ -16,8 +16,12 @@ fn main() {
     println!("cargo:rerun-if-changed={}", c_driver.join("btc_mask.h").display());
 
     let mut build = cc::Build::new();
-    build.flag("-march=rv64gc");
-    build.flag("-mabi=lp64d");
+    // RISC-V flags only for the device target: a host build (the unit tests)
+    // uses the host compiler, which rejects them.
+    if std::env::var("CARGO_CFG_TARGET_ARCH").as_deref() == Ok("riscv64") {
+        build.flag("-march=rv64gc");
+        build.flag("-mabi=lp64d");
+    }
     add_c_files(&mut build, &lvgl_src);
     build
         .file(c_driver.join("driver.c"))
