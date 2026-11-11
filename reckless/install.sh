@@ -1,8 +1,14 @@
 #!/bin/sh
-# Make the Nano 3S's two display programs equal to the ones in BIN_DIR.
+# Make the Nano 3S's display programs, and optionally its miner, equal to
+# the ones in BIN_DIR.
 #   usage: reckless/install.sh BIN_DIR [IMAGE]
-# BIN_DIR holds fb_button and nano3s_ui. IMAGE, if given, is installed as
-# /data/reckless.rgb565.
+# BIN_DIR holds fb_button and nano3s_ui, and may hold mujina-minerd. IMAGE,
+# if given, is installed as /data/reckless.rgb565.
+#
+# The miner goes last. From v5.0.5 it carries its own copies of the two
+# display programs and, when it starts, overwrites the ones on disk that
+# differ. Installing the display programs first, from the same build, means
+# its start finds them equal and changes nothing.
 #
 # It converges: a file whose hash on the device already matches is left
 # alone and its program is not restarted, so a second run changes nothing.
@@ -10,8 +16,9 @@
 #
 # A program is replaced by copying beside it and renaming over it, because
 # overwriting a running binary in place can fail on this device's UBIFS.
-# Only the display programs are restarted; their supervisor loops in
-# mujina_display_startup.sh start the new files. The miner is not touched.
+# Only the programs whose file changed are restarted; their supervisor loops
+# in mujina_display_startup.sh start the new files. The miner is restarted
+# only when BIN_DIR has a mujina-minerd that differs from the device's.
 #
 # Environment: NANO_SSH, the full ssh command for the device.
 set -eu
@@ -48,3 +55,5 @@ put() { # local-file device-path program-name-or-empty
 [ -n "$image" ] && put "$image" /data/reckless.rgb565 ""
 put "$bin/nano3s_ui" /data/nano3s_ui nano3s_ui
 put "$bin/fb_button" /mntapp/release/linux/app/fb_button fb_button
+[ -f "$bin/mujina-minerd" ] && put "$bin/mujina-minerd" /data/mujina-minerd mujina-minerd
+exit 0
