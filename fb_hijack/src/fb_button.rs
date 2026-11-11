@@ -57,13 +57,15 @@ fn beep(beeper: &mut File, millis: u64) {
 // "temps" cycle, since "temps" depended on cgminer's PVT_T[] stats
 // reply, which doesn't exist once mm_miner/cgminer are gone. "pizza"
 // and "ip" are stack-independent (static image, ifconfig) and stay.
-// "reckless" (2026-11-10) is a second static image, shown after "pizza".
+// "reckless" (2026-11-10) is a second static image, shown after "plasma".
 fn next_page(current: &str) -> &'static str {
     match current.trim() {
         "nano3s" => "nano3s-diag",
-        "nano3s-diag" => "ip",
+        "nano3s-diag" => "nano3s-tuner",
+        "nano3s-tuner" => "ip",
         "ip" => "pizza",
-        "pizza" => "reckless",
+        "pizza" => "plasma",
+        "plasma" => "reckless",
         "reckless" => "nano3s",
         _ => "nano3s",
     }
@@ -81,7 +83,7 @@ mod tests {
 
     // The cycle is one closed loop: every page is reached, in this order,
     // and the walk returns to its start. The expected order is stated once.
-    const CYCLE: [&str; 5] = ["nano3s", "nano3s-diag", "ip", "pizza", "reckless"];
+    const CYCLE: [&str; 7] = ["nano3s", "nano3s-diag", "nano3s-tuner", "ip", "pizza", "plasma", "reckless"];
 
     #[test]
     fn button_walks_the_whole_cycle_in_order() {
@@ -92,7 +94,7 @@ mod tests {
 
     #[test]
     fn page_file_newline_is_ignored() {
-        assert_eq!(next_page("pizza\n"), "reckless");
+        assert_eq!(next_page("plasma\n"), "reckless");
     }
 
     #[test]

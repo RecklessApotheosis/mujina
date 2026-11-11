@@ -1,8 +1,10 @@
 #include "driver.h"
 #include "lvgl.h"
+#include "btc_mask.h"
 
 #include <ctype.h>
 #include <fcntl.h>
+#include <math.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -17,7 +19,7 @@
 
 #define PAGE_FILE "/mntapp/release/linux/app/fb_page"
 #define PIZZA_FILE "/mntapp/release/linux/app/pizza.rgb565"
-/* Second static image, shown on the page after pizza. It lives in /data
+/* Second static image, shown on the page after plasma. It lives in /data
  * because /mntapp is nearly full. */
 #define RECKLESS_FILE "/data/reckless.rgb565"
 /* Written by rtos_core/tools/mujina.c -- plain key=value lines. */
@@ -75,6 +77,16 @@
  * C_IP_BLUE ever changes. */
 #define C_IP_BLUE_HEX "7fbcff"
 #define C_WHITE lv_color_make(0xff, 0xff, 0xff)
+#define C_CYAN lv_color_make(0x00, 0xf0, 0xff)
+#define C_MAG lv_color_make(0xff, 0x2e, 0x97)
+#define C_AMBER lv_color_make(0xff, 0xb0, 0x00)
+
+static lv_color_t temp_to_color(double t) {
+    if (t < 50.0) return C_CYAN;     /* t-cool */
+    if (t < 70.0) return C_GREEN;    /* t-normal */
+    if (t < 85.0) return C_AMBER;    /* t-warm */
+    return C_MAG;                    /* t-hot */
+}
 
 /* ── Display flush ────────────────────────────────────────────────────── */
 
@@ -317,6 +329,16 @@ static lv_obj_t *scr_diag, *diag_chips_meter, *diag_chips_label, *diag_pll, *dia
 static lv_meter_scale_t *diag_chips_scale;
 static lv_meter_indicator_t *diag_chips_arc;
 
+/* Screen 3: Auto Tuner Profile & 12-Chip Thermal Focus */
+static lv_obj_t *scr_tuner;
+static lv_obj_t *chip_arcs[12];
+static lv_obj_t *tuner_title;
+static lv_obj_t *tuner_mode_card, *tuner_mode_bar, *tuner_mode_sub, *tuner_mode_val;
+static lv_obj_t *tuner_cont_pill, *tuner_cont_lbl;
+static lv_obj_t *tuner_cool_card, *tuner_cool_title, *tuner_cool_val;
+static lv_obj_t *tuner_hot_card, *tuner_hot_title, *tuner_hot_val;
+static lv_obj_t *tuner_avg_lbl;
+
 static lv_obj_t *scr_ip, *ip_caption, *ip_value, *ip_no_wifi;
 
 static lv_obj_t *scr_wifi_setup, *wifi_setup_status, *wifi_setup_detail, *wifi_setup_meter;
@@ -440,6 +462,164 @@ static void build_screens(void) {
     make_label(scr_diag, f14, C_TEXT_2, 190, "CORE VOLTAGE");
     diag_voltage = make_label(scr_diag, f14, C_TEXT_1, 206, NULL);
     diag_err = make_label(scr_diag, f14, C_TEXT_3, 224, NULL);
+
+    /* nano3s-tuner (Screen 3): Auto Tuner Profile & Per-Chip Thermal Notches */
+    scr_tuner = lv_obj_create(NULL);
+    style_bg(scr_tuner, C_BG);
+
+    /* 12 Perimeter Chips brought comfortably inset from bezel edge (size 222x222, 9px inset from glass edge)
+     * with prominent 8-degree gaps (22 deg notch, 8 deg gap) */
+    for (int i = 0; i < 12; i++) {
+        chip_arcs[i] = lv_arc_create(scr_tuner);
+        lv_obj_remove_style(chip_arcs[i], NULL, LV_PART_KNOB);
+        lv_obj_clear_flag(chip_arcs[i], LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_set_size(chip_arcs[i], 222, 222);
+        lv_obj_center(chip_arcs[i]);
+        lv_obj_set_style_pad_all(chip_arcs[i], 0, LV_PART_MAIN);
+        lv_obj_set_style_bg_opa(chip_arcs[i], LV_OPA_TRANSP, LV_PART_MAIN);
+        lv_obj_set_style_border_width(chip_arcs[i], 0, LV_PART_MAIN);
+
+        uint16_t a1 = (uint16_t)(((270 + i * 30) % 360) + 4);
+        uint16_t a2 = (uint16_t)(a1 + 22);
+
+        lv_arc_set_rotation(chip_arcs[i], 0);
+        lv_arc_set_bg_angles(chip_arcs[i], a1, a2);
+        lv_arc_set_angles(chip_arcs[i], a1, a2);
+        lv_obj_set_style_arc_width(chip_arcs[i], 4, LV_PART_MAIN);
+        lv_obj_set_style_arc_width(chip_arcs[i], 4, LV_PART_INDICATOR);
+        lv_obj_set_style_arc_color(chip_arcs[i], lv_color_make(20, 25, 34), LV_PART_MAIN);
+        lv_obj_set_style_arc_color(chip_arcs[i], C_GREEN, LV_PART_INDICATOR);
+    }
+
+    /* Top Title Header */
+    tuner_title = lv_label_create(scr_tuner);
+    lv_obj_set_style_text_font(tuner_title, f14, LV_PART_MAIN);
+    lv_obj_set_style_text_color(tuner_title, C_CYAN, LV_PART_MAIN);
+    lv_obj_set_width(tuner_title, 240);
+    lv_obj_set_style_text_align(tuner_title, LV_TEXT_ALIGN_CENTER, LV_PART_MAIN);
+    lv_label_set_text(tuner_title, "// AUTO TUNER \\\\");
+    lv_obj_align(tuner_title, LV_ALIGN_TOP_MID, 0, 38);
+
+    /* Central Chamfered Workmode Card (132x38, centered, generous clearance) */
+    tuner_mode_card = lv_obj_create(scr_tuner);
+    lv_obj_remove_style_all(tuner_mode_card);
+    lv_obj_set_size(tuner_mode_card, 132, 38);
+    lv_obj_set_style_pad_all(tuner_mode_card, 0, LV_PART_MAIN);
+    lv_obj_align(tuner_mode_card, LV_ALIGN_TOP_MID, 0, 58);
+    lv_obj_set_style_bg_color(tuner_mode_card, lv_color_make(14, 20, 32), LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(tuner_mode_card, LV_OPA_COVER, LV_PART_MAIN);
+    lv_obj_set_style_border_color(tuner_mode_card, C_CYAN, LV_PART_MAIN);
+    lv_obj_set_style_border_width(tuner_mode_card, 1, LV_PART_MAIN);
+    lv_obj_set_style_radius(tuner_mode_card, 4, LV_PART_MAIN);
+
+    /* Left Neon Vertical Accent Strip */
+    tuner_mode_bar = lv_obj_create(tuner_mode_card);
+    lv_obj_remove_style_all(tuner_mode_bar);
+    lv_obj_set_size(tuner_mode_bar, 3, 38);
+    lv_obj_align(tuner_mode_bar, LV_ALIGN_LEFT_MID, 0, 0);
+    lv_obj_set_style_bg_color(tuner_mode_bar, C_CYAN, LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(tuner_mode_bar, LV_OPA_COVER, LV_PART_MAIN);
+
+    tuner_mode_sub = lv_label_create(tuner_mode_card);
+    lv_obj_set_style_text_font(tuner_mode_sub, f14, LV_PART_MAIN);
+    lv_obj_set_style_text_color(tuner_mode_sub, C_TEXT_3, LV_PART_MAIN);
+    lv_obj_set_width(tuner_mode_sub, 126);
+    lv_obj_set_style_text_align(tuner_mode_sub, LV_TEXT_ALIGN_CENTER, LV_PART_MAIN);
+    lv_obj_align(tuner_mode_sub, LV_ALIGN_TOP_MID, 2, 2);
+    lv_label_set_text(tuner_mode_sub, "TARGET PROFILE");
+
+    tuner_mode_val = lv_label_create(tuner_mode_card);
+    lv_obj_set_style_text_font(tuner_mode_val, f14, LV_PART_MAIN);
+    lv_obj_set_style_text_color(tuner_mode_val, C_AMBER, LV_PART_MAIN);
+    lv_obj_set_width(tuner_mode_val, 126);
+    lv_obj_set_style_text_align(tuner_mode_val, LV_TEXT_ALIGN_CENTER, LV_PART_MAIN);
+    lv_obj_align(tuner_mode_val, LV_ALIGN_BOTTOM_MID, 2, -2);
+    lv_label_set_text(tuner_mode_val, "MAX HASH");
+
+    /* Continuous Tuning Pill (136x24, single line no-wrap) */
+    tuner_cont_pill = lv_obj_create(scr_tuner);
+    lv_obj_remove_style_all(tuner_cont_pill);
+    lv_obj_set_size(tuner_cont_pill, 136, 24);
+    lv_obj_set_style_pad_all(tuner_cont_pill, 0, LV_PART_MAIN);
+    lv_obj_align(tuner_cont_pill, LV_ALIGN_TOP_MID, 0, 102);
+    lv_obj_set_style_bg_color(tuner_cont_pill, lv_color_make(12, 38, 24), LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(tuner_cont_pill, LV_OPA_COVER, LV_PART_MAIN);
+    lv_obj_set_style_border_color(tuner_cont_pill, C_GREEN, LV_PART_MAIN);
+    lv_obj_set_style_border_width(tuner_cont_pill, 1, LV_PART_MAIN);
+    lv_obj_set_style_radius(tuner_cont_pill, 12, LV_PART_MAIN);
+
+    tuner_cont_lbl = lv_label_create(tuner_cont_pill);
+    lv_obj_set_style_text_font(tuner_cont_lbl, f14, LV_PART_MAIN);
+    lv_obj_set_style_text_color(tuner_cont_lbl, C_GREEN, LV_PART_MAIN);
+    lv_label_set_long_mode(tuner_cont_lbl, LV_LABEL_LONG_CLIP);
+    lv_obj_set_width(tuner_cont_lbl, 136);
+    lv_obj_set_style_text_align(tuner_cont_lbl, LV_TEXT_ALIGN_CENTER, LV_PART_MAIN);
+    lv_obj_align(tuner_cont_lbl, LV_ALIGN_CENTER, 0, 0);
+    lv_label_set_text(tuner_cont_lbl, "CONTINUOUS: ON");
+
+    /* Dedicated Lower Thermal Extremity Cards (Coolest vs Hottest) */
+    tuner_cool_card = lv_obj_create(scr_tuner);
+    lv_obj_remove_style_all(tuner_cool_card);
+    lv_obj_set_size(tuner_cool_card, 58, 36);
+    lv_obj_set_style_pad_all(tuner_cool_card, 0, LV_PART_MAIN);
+    lv_obj_align(tuner_cool_card, LV_ALIGN_TOP_MID, -33, 132);
+    lv_obj_set_style_bg_color(tuner_cool_card, lv_color_make(14, 20, 32), LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(tuner_cool_card, LV_OPA_COVER, LV_PART_MAIN);
+    lv_obj_set_style_border_color(tuner_cool_card, C_DIVIDER, LV_PART_MAIN);
+    lv_obj_set_style_border_width(tuner_cool_card, 1, LV_PART_MAIN);
+    lv_obj_set_style_radius(tuner_cool_card, 4, LV_PART_MAIN);
+
+    tuner_cool_title = lv_label_create(tuner_cool_card);
+    lv_obj_set_style_text_font(tuner_cool_title, f14, LV_PART_MAIN);
+    lv_obj_set_style_text_color(tuner_cool_title, C_TEXT_3, LV_PART_MAIN);
+    lv_obj_set_width(tuner_cool_title, 58);
+    lv_obj_set_style_text_align(tuner_cool_title, LV_TEXT_ALIGN_CENTER, LV_PART_MAIN);
+    lv_obj_align(tuner_cool_title, LV_ALIGN_TOP_MID, 0, 2);
+    lv_label_set_text(tuner_cool_title, "C11");
+
+    tuner_cool_val = lv_label_create(tuner_cool_card);
+    lv_obj_set_style_text_font(tuner_cool_val, f14, LV_PART_MAIN);
+    lv_obj_set_style_text_color(tuner_cool_val, C_GREEN, LV_PART_MAIN);
+    lv_obj_set_width(tuner_cool_val, 58);
+    lv_obj_set_style_text_align(tuner_cool_val, LV_TEXT_ALIGN_CENTER, LV_PART_MAIN);
+    lv_obj_align(tuner_cool_val, LV_ALIGN_BOTTOM_MID, 0, -2);
+    lv_label_set_text(tuner_cool_val, "59.0C");
+
+    tuner_hot_card = lv_obj_create(scr_tuner);
+    lv_obj_remove_style_all(tuner_hot_card);
+    lv_obj_set_size(tuner_hot_card, 58, 36);
+    lv_obj_set_style_pad_all(tuner_hot_card, 0, LV_PART_MAIN);
+    lv_obj_align(tuner_hot_card, LV_ALIGN_TOP_MID, 33, 132);
+    lv_obj_set_style_bg_color(tuner_hot_card, lv_color_make(14, 20, 32), LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(tuner_hot_card, LV_OPA_COVER, LV_PART_MAIN);
+    lv_obj_set_style_border_color(tuner_hot_card, C_DIVIDER, LV_PART_MAIN);
+    lv_obj_set_style_border_width(tuner_hot_card, 1, LV_PART_MAIN);
+    lv_obj_set_style_radius(tuner_hot_card, 4, LV_PART_MAIN);
+
+    tuner_hot_title = lv_label_create(tuner_hot_card);
+    lv_obj_set_style_text_font(tuner_hot_title, f14, LV_PART_MAIN);
+    lv_obj_set_style_text_color(tuner_hot_title, C_TEXT_3, LV_PART_MAIN);
+    lv_obj_set_width(tuner_hot_title, 58);
+    lv_obj_set_style_text_align(tuner_hot_title, LV_TEXT_ALIGN_CENTER, LV_PART_MAIN);
+    lv_obj_align(tuner_hot_title, LV_ALIGN_TOP_MID, 0, 2);
+    lv_label_set_text(tuner_hot_title, "C05");
+
+    tuner_hot_val = lv_label_create(tuner_hot_card);
+    lv_obj_set_style_text_font(tuner_hot_val, f14, LV_PART_MAIN);
+    lv_obj_set_style_text_color(tuner_hot_val, C_MAG, LV_PART_MAIN);
+    lv_obj_set_width(tuner_hot_val, 58);
+    lv_obj_set_style_text_align(tuner_hot_val, LV_TEXT_ALIGN_CENTER, LV_PART_MAIN);
+    lv_obj_align(tuner_hot_val, LV_ALIGN_BOTTOM_MID, 0, -2);
+    lv_label_set_text(tuner_hot_val, "85.9C");
+
+    /* Bottom Summary Label */
+    tuner_avg_lbl = lv_label_create(scr_tuner);
+    lv_obj_set_style_text_font(tuner_avg_lbl, f14, LV_PART_MAIN);
+    lv_obj_set_style_text_color(tuner_avg_lbl, C_TEXT_1, LV_PART_MAIN);
+    lv_obj_set_width(tuner_avg_lbl, 240);
+    lv_obj_set_style_text_align(tuner_avg_lbl, LV_TEXT_ALIGN_CENTER, LV_PART_MAIN);
+    lv_label_set_text(tuner_avg_lbl, "AVG CHIP: -- C");
+    lv_obj_align(tuner_avg_lbl, LV_ALIGN_TOP_MID, 0, 176);
 
     /* ip / network */
     scr_ip = lv_obj_create(NULL);
@@ -644,6 +824,136 @@ static void refresh_diag(void) {
     lv_scr_load(scr_diag);
 }
 
+static void refresh_tuner(void) {
+    /* 1. Target Profile / Workmode */
+    const char *mode = kv_str("autotune_mode");
+    const char *mode_display = "OFF";
+    lv_color_t mode_color = C_TEXT_3;
+
+    if (mode && *mode) {
+        if (strcasecmp(mode, "max_hash") == 0 || strcasecmp(mode, "max hash") == 0 || strcasecmp(mode, "max") == 0) {
+            mode_display = "MAX HASH";
+            mode_color = C_AMBER;
+        } else if (strcasecmp(mode, "balanced") == 0) {
+            mode_display = "BALANCED";
+            mode_color = C_CYAN;
+        } else if (strcasecmp(mode, "efficient") == 0) {
+            mode_display = "EFFICIENT";
+            mode_color = C_GREEN;
+        } else if (strcasecmp(mode, "quiet") == 0) {
+            mode_display = "QUIET";
+            mode_color = C_GREEN;
+        } else if (strcasecmp(mode, "off") == 0) {
+            mode_display = "OFF";
+            mode_color = C_TEXT_3;
+        } else {
+            mode_display = mode;
+            mode_color = C_TEXT_1;
+        }
+    }
+    lv_label_set_text(tuner_mode_val, mode_display);
+    lv_obj_set_style_text_color(tuner_mode_val, mode_color, LV_PART_MAIN);
+
+    /* 2. Continuous Tuning Pill */
+    int cont = kv_bool("autotune_continuous");
+    if (cont) {
+        lv_label_set_text(tuner_cont_lbl, "CONTINUOUS: ON");
+        lv_obj_set_style_text_color(tuner_cont_lbl, C_GREEN, LV_PART_MAIN);
+        lv_obj_set_style_bg_color(tuner_cont_pill, lv_color_make(12, 38, 24), LV_PART_MAIN);
+        lv_obj_set_style_border_color(tuner_cont_pill, C_GREEN, LV_PART_MAIN);
+    } else {
+        lv_label_set_text(tuner_cont_lbl, "CONTINUOUS: OFF");
+        lv_obj_set_style_text_color(tuner_cont_lbl, C_TEXT_3, LV_PART_MAIN);
+        lv_obj_set_style_bg_color(tuner_cont_pill, lv_color_make(18, 22, 28), LV_PART_MAIN);
+        lv_obj_set_style_border_color(tuner_cont_pill, C_DIVIDER, LV_PART_MAIN);
+    }
+
+    /* 3. Perimeter Chip Thermal Arcs (12 arcs spread around full 360 circle with zero gap)
+     * As chips get hotter, their arc expands inward towards the center and changes color. */
+    const char *csv = kv_str("chip_temps");
+    if (csv && *csv) {
+        char copy[128];
+        strncpy(copy, csv, sizeof(copy) - 1);
+        copy[sizeof(copy) - 1] = '\0';
+        char *saveptr = NULL;
+        char *token = strtok_r(copy, ",", &saveptr);
+        int idx = 0;
+        while (token && idx < 12) {
+            double t = atof(token);
+            lv_color_t tc = temp_to_color(t);
+            int w = 4;
+            if (t <= 45.0) {
+                w = 4;
+            } else if (t >= 85.0) {
+                w = 12;
+            } else {
+                w = 4 + (int)((t - 45.0) / (85.0 - 45.0) * 8.0 + 0.5);
+            }
+            lv_obj_set_style_arc_width(chip_arcs[idx], w, LV_PART_MAIN);
+            lv_obj_set_style_arc_width(chip_arcs[idx], w, LV_PART_INDICATOR);
+            lv_obj_set_style_arc_color(chip_arcs[idx], tc, LV_PART_INDICATOR);
+            lv_obj_invalidate(chip_arcs[idx]);
+            token = strtok_r(NULL, ",", &saveptr);
+            idx++;
+        }
+        for (; idx < 12; idx++) {
+            lv_obj_set_style_arc_width(chip_arcs[idx], 4, LV_PART_MAIN);
+            lv_obj_set_style_arc_width(chip_arcs[idx], 4, LV_PART_INDICATOR);
+            lv_obj_set_style_arc_color(chip_arcs[idx], lv_color_make(30, 35, 45), LV_PART_INDICATOR);
+            lv_obj_invalidate(chip_arcs[idx]);
+        }
+    } else {
+        for (int i = 0; i < 12; i++) {
+            lv_obj_set_style_arc_width(chip_arcs[i], 4, LV_PART_MAIN);
+            lv_obj_set_style_arc_width(chip_arcs[i], 4, LV_PART_INDICATOR);
+            lv_obj_set_style_arc_color(chip_arcs[i], lv_color_make(30, 35, 45), LV_PART_INDICATOR);
+            lv_obj_invalidate(chip_arcs[i]);
+        }
+    }
+
+    /* 4. Thermal Extremity Cards (Coolest vs Hottest) & Average */
+    double min_t = 0.0, max_t = 0.0, avg_t = 0.0;
+    int have_min = kv_f64("temp_min", &min_t);
+    int have_max = kv_f64("temp_max", &max_t);
+    int have_avg = kv_f64("temp_avg", &avg_t);
+    const char *min_chip = kv_str("temp_min_chip");
+    const char *max_chip = kv_str("temp_max_chip");
+
+    if (have_min) {
+        char buf_min[32];
+        snprintf(buf_min, sizeof(buf_min), "%.1fC", min_t);
+        lv_label_set_text(tuner_cool_val, buf_min);
+        lv_obj_set_style_text_color(tuner_cool_val, temp_to_color(min_t), LV_PART_MAIN);
+        lv_label_set_text(tuner_cool_title, (min_chip && *min_chip) ? min_chip : "MIN");
+    } else {
+        lv_label_set_text(tuner_cool_val, "--");
+        lv_label_set_text(tuner_cool_title, "MIN");
+    }
+
+    if (have_max) {
+        char buf_max[32];
+        snprintf(buf_max, sizeof(buf_max), "%.1fC", max_t);
+        lv_label_set_text(tuner_hot_val, buf_max);
+        lv_obj_set_style_text_color(tuner_hot_val, temp_to_color(max_t), LV_PART_MAIN);
+        lv_label_set_text(tuner_hot_title, (max_chip && *max_chip) ? max_chip : "MAX");
+    } else {
+        lv_label_set_text(tuner_hot_val, "--");
+        lv_label_set_text(tuner_hot_title, "MAX");
+    }
+
+    if (have_avg) {
+        char buf_avg[32];
+        snprintf(buf_avg, sizeof(buf_avg), "AVG CHIP: %.1fC", avg_t);
+        lv_label_set_text(tuner_avg_lbl, buf_avg);
+        lv_obj_set_style_text_color(tuner_avg_lbl, temp_to_color(avg_t), LV_PART_MAIN);
+    } else {
+        lv_label_set_text(tuner_avg_lbl, "AVG CHIP: -- C");
+        lv_obj_set_style_text_color(tuner_avg_lbl, C_TEXT_2, LV_PART_MAIN);
+    }
+
+    lv_scr_load(scr_tuner);
+}
+
 static void refresh_ip(void) {
     char ip[32];
     if (wlan_ip(ip, sizeof(ip))) {
@@ -769,9 +1079,346 @@ static void refresh_raw_image(const char *path) {
     close(fd);
 }
 
+/* ── Procedural Plasma Disk Animation with Black Bitcoin B ──────────────── */
+#define PLASMA_NUM_STREAMERS 14
+
+/* Pure Electric Bitcoin Orange Palette (#F7931A):
+ * Exact #F7931A is (247, 147, 26) -> RGB565: (30, 36, 3) -> 0xF483
+ * Core: Bright intense golden-orange (255, 180, 50) -> RGB565: (31, 45, 6) -> 0xFDA6
+ * Glow: Pure Bitcoin Orange #F7931A (247, 147, 26) -> RGB565: (30, 36, 3) -> 0xF483
+ * Halo: Deep fiery amber (220, 85, 0) -> RGB565: (27, 21, 0) -> 0xDAA0
+ * Border / Rim: Pure Bitcoin Orange #F7931A -> 0xF483
+ * Spark: High-energy white-orange corona spark -> 0xFFB0
+ */
+#define PLASMA_COLOR_CORE   0xFDA6  /* Intense electric golden-orange */
+#define PLASMA_COLOR_GLOW   0xF483  /* Exact Bitcoin Orange #F7931A */
+#define PLASMA_COLOR_HALO   0xDAA0  /* Deep fiery amber */
+#define PLASMA_COLOR_BORDER 0xF483  /* Pure #F7931A border */
+#define PLASMA_COLOR_SPARK  0xFFB0  /* High-energy corona spark */
+
+typedef struct {
+    float x, y;
+} plasma_pt_t;
+
+typedef struct {
+    float angle;
+    float target_angle;
+    int life;
+    float intensity;
+} plasma_streamer_t;
+
+static uint16_t plasma_fb[HOR_RES * VER_RES];
+static plasma_streamer_t plasma_streamers[PLASMA_NUM_STREAMERS];
+static int plasma_inited = 0;
+
+static inline uint16_t plasma_blend_add(uint16_t bg, uint16_t fg) {
+    uint32_t r = ((bg >> 11) & 0x1F) + ((fg >> 11) & 0x1F);
+    uint32_t g = ((bg >> 5) & 0x3F) + ((fg >> 5) & 0x3F);
+    uint32_t b = (bg & 0x1F) + (fg & 0x1F);
+    if (r > 31) r = 31;
+    if (g > 63) g = 63;
+    if (b > 31) b = 31;
+    return (uint16_t)((r << 11) | (g << 5) | b);
+}
+
+static inline uint16_t plasma_decay_pixel(uint16_t p) {
+    if (!p) return 0;
+    /* Red decays slowest (retention ~81%), green drops faster (~56%), blue drops rapidly (~25%)
+     * This keeps persistence trails warmly electric orange and fiery amber without green shift */
+    uint32_t r = ((p >> 11) & 0x1F) * 26 >> 5;
+    uint32_t g = ((p >> 5) & 0x3F) * 18 >> 5;
+    uint32_t b = (p & 0x1F) * 8 >> 5;
+    return (uint16_t)((r << 11) | (g << 5) | b);
+}
+
+static void plasma_decay_buffer(void) {
+    for (int i = 0; i < HOR_RES * VER_RES; i++) {
+        plasma_fb[i] = plasma_decay_pixel(plasma_fb[i]);
+    }
+}
+
+static inline void plasma_put_pixel_safe(int x, int y, uint16_t col) {
+    if ((unsigned)x < HOR_RES && (unsigned)y < VER_RES) {
+        int idx = y * HOR_RES + x;
+        plasma_fb[idx] = plasma_blend_add(plasma_fb[idx], col);
+    }
+}
+
+/* Multi-tier hierarchical line drawing:
+ * level 0: Primary trunk (thick, bold, 3px core, 5px glow, 7px halo)
+ * level 1: Secondary branch (2px core, 4px glow)
+ * level 2: Tertiary micro-filament (fine 1-2px spiderweb crackle)
+ */
+static void plasma_draw_line(int x0, int y0, int x1, int y1, int level) {
+    int dx = abs(x1 - x0);
+    int dy = abs(y1 - y0);
+    int sx = (x0 < x1) ? 1 : -1;
+    int sy = (y0 < y1) ? 1 : -1;
+    int err = dx - dy;
+
+    while (1) {
+        if (level == 0) {
+            /* Bold primary trunk */
+            plasma_put_pixel_safe(x0, y0, PLASMA_COLOR_CORE);
+            plasma_put_pixel_safe(x0 + 1, y0, PLASMA_COLOR_CORE);
+            plasma_put_pixel_safe(x0 - 1, y0, PLASMA_COLOR_CORE);
+            plasma_put_pixel_safe(x0, y0 + 1, PLASMA_COLOR_CORE);
+            plasma_put_pixel_safe(x0, y0 - 1, PLASMA_COLOR_CORE);
+
+            plasma_put_pixel_safe(x0 + 1, y0 + 1, PLASMA_COLOR_GLOW);
+            plasma_put_pixel_safe(x0 - 1, y0 + 1, PLASMA_COLOR_GLOW);
+            plasma_put_pixel_safe(x0 + 1, y0 - 1, PLASMA_COLOR_GLOW);
+            plasma_put_pixel_safe(x0 - 1, y0 - 1, PLASMA_COLOR_GLOW);
+            plasma_put_pixel_safe(x0 + 2, y0, PLASMA_COLOR_GLOW);
+            plasma_put_pixel_safe(x0 - 2, y0, PLASMA_COLOR_GLOW);
+            plasma_put_pixel_safe(x0, y0 + 2, PLASMA_COLOR_GLOW);
+            plasma_put_pixel_safe(x0 - 2, y0, PLASMA_COLOR_GLOW);
+
+            plasma_put_pixel_safe(x0 + 2, y0 + 1, PLASMA_COLOR_HALO);
+            plasma_put_pixel_safe(x0 - 2, y0 + 1, PLASMA_COLOR_HALO);
+            plasma_put_pixel_safe(x0 + 2, y0 - 1, PLASMA_COLOR_HALO);
+            plasma_put_pixel_safe(x0 - 2, y0 - 1, PLASMA_COLOR_HALO);
+            plasma_put_pixel_safe(x0 + 1, y0 + 2, PLASMA_COLOR_HALO);
+            plasma_put_pixel_safe(x0 - 1, y0 + 2, PLASMA_COLOR_HALO);
+            plasma_put_pixel_safe(x0 + 1, y0 - 2, PLASMA_COLOR_HALO);
+            plasma_put_pixel_safe(x0 - 1, y0 - 2, PLASMA_COLOR_HALO);
+        } else if (level == 1) {
+            /* Secondary branch */
+            plasma_put_pixel_safe(x0, y0, PLASMA_COLOR_CORE);
+            plasma_put_pixel_safe(x0 + 1, y0, PLASMA_COLOR_GLOW);
+            plasma_put_pixel_safe(x0 - 1, y0, PLASMA_COLOR_GLOW);
+            plasma_put_pixel_safe(x0, y0 + 1, PLASMA_COLOR_GLOW);
+            plasma_put_pixel_safe(x0, y0 - 1, PLASMA_COLOR_GLOW);
+            plasma_put_pixel_safe(x0 + 1, y0 + 1, PLASMA_COLOR_HALO);
+            plasma_put_pixel_safe(x0 - 1, y0 + 1, PLASMA_COLOR_HALO);
+            plasma_put_pixel_safe(x0 + 1, y0 - 1, PLASMA_COLOR_HALO);
+            plasma_put_pixel_safe(x0 - 1, y0 - 1, PLASMA_COLOR_HALO);
+        } else {
+            /* Tertiary micro-filament: fine, delicate, crisp */
+            plasma_put_pixel_safe(x0, y0, PLASMA_COLOR_GLOW);
+            plasma_put_pixel_safe(x0 + 1, y0, PLASMA_COLOR_HALO);
+            plasma_put_pixel_safe(x0, y0 + 1, PLASMA_COLOR_HALO);
+        }
+
+        if (x0 == x1 && y0 == y1) break;
+        int e2 = 2 * err;
+        if (e2 > -dy) {
+            err -= dy;
+            x0 += sx;
+        }
+        if (e2 < dx) {
+            err += dx;
+            y0 += sy;
+        }
+    }
+}
+
+static inline float plasma_frand(float min, float max) {
+    return min + (float)rand() / (float)RAND_MAX * (max - min);
+}
+
+static void plasma_render_arc(plasma_pt_t start, plasma_pt_t end, float roughness, int depth, int level) {
+    int num_pts = (1 << depth) + 1;
+    plasma_pt_t pts[33];
+    pts[0] = start;
+    pts[num_pts - 1] = end;
+
+    float disp = roughness;
+    for (int step = (num_pts - 1) / 2; step > 0; step /= 2) {
+        for (int i = step; i < num_pts; i += step * 2) {
+            plasma_pt_t p1 = pts[i - step];
+            plasma_pt_t p2 = pts[i + step];
+            float mx = (p1.x + p2.x) * 0.5f;
+            float my = (p1.y + p2.y) * 0.5f;
+            float dx = p2.x - p1.x;
+            float dy = p2.y - p1.y;
+            float len = sqrtf(dx * dx + dy * dy);
+            float nx = 0, ny = 1;
+            if (len > 0.001f) {
+                nx = -dy / len;
+                ny = dx / len;
+            }
+            float offset = plasma_frand(-disp, disp);
+            pts[i].x = mx + nx * offset;
+            pts[i].y = my + ny * offset;
+        }
+        disp *= 0.53f;
+    }
+
+    for (int i = 0; i < num_pts - 1; i++) {
+        plasma_draw_line((int)(pts[i].x + 0.5f), (int)(pts[i].y + 0.5f),
+                         (int)(pts[i + 1].x + 0.5f), (int)(pts[i + 1].y + 0.5f), level);
+    }
+
+    /* Secondary branches from primary trunk (level 0 -> level 1) */
+    if (level == 0) {
+        int num_branches = 1 + ((rand() % 100) < 60 ? 1 : 0);
+        for (int b = 0; b < num_branches; b++) {
+            int b_idx = 4 + (rand() % (num_pts - 8));
+            plasma_pt_t b_start = pts[b_idx];
+            float cur_angle = atan2f(b_start.y - 120.0f, b_start.x - 120.0f);
+            float branch_angle = cur_angle + plasma_frand(-0.35f, 0.35f);
+            float reach = plasma_frand(0.85f, 1.0f);
+            plasma_pt_t b_target = {
+                120.0f + 114.0f * reach * cosf(branch_angle),
+                120.0f + 114.0f * reach * sinf(branch_angle)
+            };
+            plasma_render_arc(b_start, b_target, roughness * 0.65f, 4, 1);
+        }
+    }
+
+    /* Tertiary micro-filaments (level 1 -> level 2): delicate spiderweb cracks */
+    if (level == 1 && (rand() % 100) < 65) {
+        int m_idx = 3 + (rand() % (num_pts - 6));
+        plasma_pt_t m_start = pts[m_idx];
+        float cur_angle = atan2f(m_start.y - 120.0f, m_start.x - 120.0f);
+        float micro_angle = cur_angle + plasma_frand(-0.45f, 0.45f);
+        float micro_dist = plasma_frand(18.0f, 32.0f);
+        plasma_pt_t m_target = {
+            m_start.x + micro_dist * cosf(micro_angle),
+            m_start.y + micro_dist * sinf(micro_angle)
+        };
+        plasma_render_arc(m_start, m_target, roughness * 0.45f, 3, 2);
+    }
+}
+
+static plasma_pt_t plasma_find_boundary(float angle) {
+    float ca = cosf(angle);
+    float sa = sinf(angle);
+    plasma_pt_t best = { 120.0f + 35.0f * ca, 120.0f + 35.0f * sa };
+    for (int r = 16; r < 80; r += 2) {
+        int tx = (int)(120.0f + r * ca);
+        int ty = (int)(120.0f + r * sa);
+        if (tx >= 0 && tx < HOR_RES && ty >= 0 && ty < VER_RES) {
+            if (!is_btc_mask(tx, ty)) {
+                best.x = (float)tx;
+                best.y = (float)ty;
+                break;
+            }
+        }
+    }
+    return best;
+}
+
+static void refresh_plasma(int init) {
+    if (!plasma_inited || init) {
+        memset(plasma_fb, 0, sizeof(plasma_fb));
+        for (int i = 0; i < PLASMA_NUM_STREAMERS; i++) {
+            float base_ang = (float)i * (2.0f * 3.14159265f / PLASMA_NUM_STREAMERS) + plasma_frand(-0.08f, 0.08f);
+            plasma_streamers[i].angle = base_ang;
+            plasma_streamers[i].target_angle = base_ang + plasma_frand(-0.35f, 0.35f);
+            plasma_streamers[i].life = 10 + (rand() % 18);
+            plasma_streamers[i].intensity = plasma_frand(0.85f, 1.0f);
+        }
+        plasma_inited = 1;
+    }
+
+    plasma_decay_buffer();
+
+    /* Render 14 streamers covering all 360 degrees */
+    for (int i = 0; i < PLASMA_NUM_STREAMERS; i++) {
+        plasma_streamers[i].angle += (plasma_streamers[i].target_angle - plasma_streamers[i].angle) * 0.15f + plasma_frand(-0.03f, 0.03f);
+        plasma_streamers[i].life--;
+        if (plasma_streamers[i].life <= 0) {
+            plasma_streamers[i].target_angle += plasma_frand(-0.5f, 0.5f);
+            plasma_streamers[i].life = 8 + (rand() % 18);
+            plasma_streamers[i].intensity = plasma_frand(0.85f, 1.0f);
+        }
+
+        plasma_pt_t p_start = plasma_find_boundary(plasma_streamers[i].angle);
+        float rim_angle = plasma_streamers[i].angle + plasma_frand(-0.18f, 0.18f);
+        plasma_pt_t p_target = {
+            120.0f + 114.0f * cosf(rim_angle),
+            120.0f + 114.0f * sinf(rim_angle)
+        };
+
+        /* Primary arc (level 0, depth 5 = 32 segments) */
+        plasma_render_arc(p_start, p_target, 18.0f * plasma_streamers[i].intensity, 5, 0);
+
+        /* Grounding impact flare on outer rim with lateral glass creep */
+        int rx = (int)p_target.x;
+        int ry = (int)p_target.y;
+        plasma_put_pixel_safe(rx, ry, PLASMA_COLOR_CORE);
+        plasma_put_pixel_safe(rx + 1, ry, PLASMA_COLOR_GLOW);
+        plasma_put_pixel_safe(rx - 1, ry, PLASMA_COLOR_GLOW);
+        plasma_put_pixel_safe(rx, ry + 1, PLASMA_COLOR_GLOW);
+        plasma_put_pixel_safe(rx - 1, ry, PLASMA_COLOR_GLOW);
+        plasma_put_pixel_safe(rx + 1, ry + 1, PLASMA_COLOR_HALO);
+        plasma_put_pixel_safe(rx - 1, ry + 1, PLASMA_COLOR_HALO);
+        plasma_put_pixel_safe(rx + 1, ry - 1, PLASMA_COLOR_HALO);
+        plasma_put_pixel_safe(rx - 1, ry - 1, PLASMA_COLOR_HALO);
+
+        /* Lateral glass surface creep */
+        float tan_x = -sinf(rim_angle);
+        float tan_y = cosf(rim_angle);
+        for (int k = 1; k <= 3; k++) {
+            plasma_put_pixel_safe((int)(rx + tan_x * k), (int)(ry + tan_y * k), PLASMA_COLOR_GLOW);
+            plasma_put_pixel_safe((int)(rx - tan_x * k), (int)(ry - tan_y * k), PLASMA_COLOR_GLOW);
+        }
+    }
+
+    /* Outer glass rim glow in #F7931A */
+    for (int a = 0; a < 360; a++) {
+        float rad = (float)a * 3.14159265f / 180.0f;
+        int rx = (int)(120.0f + 114.0f * cosf(rad) + 0.5f);
+        int ry = (int)(120.0f + 114.0f * sinf(rad) + 0.5f);
+        if (rx >= 0 && rx < HOR_RES && ry >= 0 && ry < VER_RES) {
+            plasma_fb[ry * HOR_RES + rx] = plasma_blend_add(plasma_fb[ry * HOR_RES + rx], 0x9300);
+        }
+    }
+
+    /* Energized orange corona around the Bitcoin B perimeter */
+    for (int y = 65; y <= 175; y++) {
+        for (int x = 75; x <= 165; x++) {
+            if (is_btc_border(x, y)) {
+                plasma_fb[y * HOR_RES + x] = plasma_blend_add(plasma_fb[y * HOR_RES + x], PLASMA_COLOR_BORDER);
+            }
+        }
+    }
+
+    /* Crackling corona spark hotspots along the B edge (high-energy micro-arcs) */
+    for (int s = 0; s < 12; s++) {
+        float spark_angle = plasma_frand(0.0f, 6.28318f);
+        plasma_pt_t sp = plasma_find_boundary(spark_angle);
+        plasma_put_pixel_safe((int)sp.x, (int)sp.y, PLASMA_COLOR_SPARK);
+        plasma_put_pixel_safe((int)sp.x + 1, (int)sp.y, PLASMA_COLOR_GLOW);
+        plasma_put_pixel_safe((int)sp.x - 1, (int)sp.y, PLASMA_COLOR_GLOW);
+        plasma_put_pixel_safe((int)sp.x, (int)sp.y + 1, PLASMA_COLOR_GLOW);
+        plasma_put_pixel_safe((int)sp.x - 1, (int)sp.y, PLASMA_COLOR_GLOW);
+    }
+
+    /* Final mask: The interior of the Bitcoin B is solid jet black, and outside perimeter is black */
+    for (int y = 0; y < VER_RES; y++) {
+        for (int x = 0; x < HOR_RES; x++) {
+            int dx = x - 120;
+            int dy = y - 120;
+            if (dx * dx + dy * dy > 115 * 115) {
+                plasma_fb[y * HOR_RES + x] = 0;
+            } else if (is_btc_mask(x, y)) {
+                plasma_fb[y * HOR_RES + x] = 0;
+            }
+        }
+    }
+
+    /* Blit to /dev/fb0 */
+    int fd = open(FB_DEV, O_WRONLY);
+    if (fd >= 0) {
+        lseek(fd, 0, SEEK_SET);
+        size_t written = 0;
+        size_t total = sizeof(plasma_fb);
+        const uint8_t *ptr = (const uint8_t *)plasma_fb;
+        while (written < total) {
+            ssize_t wn = write(fd, ptr + written, total - written);
+            if (wn <= 0) break;
+            written += (size_t)wn;
+        }
+        close(fd);
+    }
+}
+
 /* ── Page-file polling loop (mirrors fb_draw.rs's run_live_nano3s()) ────── */
 
-typedef enum { PG_LIVE, PG_DIAG, PG_IP, PG_PIZZA, PG_RECKLESS, PG_DOOM, PG_WIFI_SETUP } page_t;
+typedef enum { PG_LIVE, PG_DIAG, PG_TUNER, PG_IP, PG_PIZZA, PG_PLASMA, PG_RECKLESS, PG_DOOM, PG_WIFI_SETUP } page_t;
 
 /* Pages that are one raw image written straight to the framebuffer. LVGL
  * must not run while one is shown, or it paints over the image. */
@@ -783,8 +1430,10 @@ static const char *raw_image_file(page_t pg) {
 
 static page_t parse_page(const char *s) {
     if (strcmp(s, "nano3s-diag") == 0) return PG_DIAG;
+    if (strcmp(s, "nano3s-tuner") == 0) return PG_TUNER;
     if (strcmp(s, "ip") == 0) return PG_IP;
     if (strcmp(s, "pizza") == 0) return PG_PIZZA;
+    if (strcmp(s, "plasma") == 0) return PG_PLASMA;
     if (strcmp(s, "reckless") == 0) return PG_RECKLESS;
     if (strcmp(s, "wifi-setup") == 0) return PG_WIFI_SETUP;
     /* "doom" fully yields /dev/fb0 -- nano3s_doom owns the panel while
@@ -834,6 +1483,13 @@ static void run_event_loop(void) {
             continue;
         }
 
+        if (pg == PG_PLASMA) {
+            refresh_plasma(page_changed);
+            strcpy(last_page, page);
+            usleep(50 * 1000); /* 20 FPS procedural lightning animation */
+            continue;
+        }
+
         if (page_changed || now - last_refresh >= REFRESH_INTERVAL_MS) {
             strcpy(last_page, page);
             last_refresh = now;
@@ -849,6 +1505,8 @@ static void run_event_loop(void) {
             } else if (read_kv_file(NANO3S_LIVE_FILE)) {
                 if (pg == PG_DIAG) {
                     refresh_diag();
+                } else if (pg == PG_TUNER) {
+                    refresh_tuner();
                 } else {
                     refresh_live();
                 }

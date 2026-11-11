@@ -11,11 +11,22 @@ export CARGO_TARGET_RISCV64GC_UNKNOWN_LINUX_GNU_LINKER=/home/grant/nano3s-build/
 export PKG_CONFIG_ALLOW_CROSS=1
 export PKG_CONFIG_SYSROOT_DIR=/home/grant/riscv64-sysroot
 export PKG_CONFIG_PATH=/home/grant/riscv64-sysroot/usr/lib/riscv64-linux-gnu/pkgconfig
-export RUSTFLAGS="-C target-feature=+crt-static -L /home/grant/riscv64-sysroot/usr/lib/riscv64-linux-gnu"
+export RUSTFLAGS="-C target-feature=+crt-static -C target-cpu=generic-rv64 -L /home/grant/riscv64-sysroot/usr/lib/riscv64-linux-gnu"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 # The Cargo workspace root (Cargo.toml, mujina-miner/) is two levels up
 # from this script.
 WORKSPACE_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+
+echo "[*] Building companion binary: nano3s_ui..."
+cd "$WORKSPACE_ROOT/nano3s_ui"
+cargo build --release --target riscv64gc-unknown-linux-gnu
+riscv64-linux-gnu-strip --strip-all "$WORKSPACE_ROOT/nano3s_ui/target/riscv64gc-unknown-linux-gnu/release/nano3s_ui"
+
+echo "[*] Building companion binary: fb_button..."
+cd "$WORKSPACE_ROOT/fb_hijack"
+cargo build --release --target riscv64gc-unknown-linux-gnu --bin fb_button
+riscv64-linux-gnu-strip --strip-all "$WORKSPACE_ROOT/fb_hijack/target/riscv64gc-unknown-linux-gnu/release/fb_button"
+
 cd "$WORKSPACE_ROOT/mujina-miner"
 cargo build --release --target riscv64gc-unknown-linux-gnu --features nano3s --bin mujina-minerd --bin ble_setup
 # Built binary path (workspace-rooted target dir).
