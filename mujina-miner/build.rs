@@ -39,12 +39,15 @@ fn main() {
     // rtos_core lives two levels up from this crate
     // (mujina-upstream/mujina-miner -> mujina-upstream -> nano3s -> rtos_core).
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let rtos_core = manifest_dir
-        .parent()
-        .expect("mujina-miner has a parent dir")
-        .parent()
-        .expect("mujina-upstream has a parent dir")
-        .join("rtos_core");
+    let repo_root = manifest_dir.parent().expect("mujina-miner has a parent dir");
+    // This repository carries rtos_core/ at its root; prefer it, so a plain
+    // checkout builds. The older layout kept it one level above the repo.
+    let in_repo = repo_root.join("rtos_core");
+    let rtos_core = if in_repo.join("tools").join("nano3s_ipc_shim.c").exists() {
+        in_repo
+    } else {
+        repo_root.parent().expect("repo has a parent dir").join("rtos_core")
+    };
 
     let tools = rtos_core.join("tools");
     let include = rtos_core.join("include");
