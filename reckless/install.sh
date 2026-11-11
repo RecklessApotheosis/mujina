@@ -16,9 +16,13 @@
 #
 # A program is replaced by copying beside it and renaming over it, because
 # overwriting a running binary in place can fail on this device's UBIFS.
-# Only the programs whose file changed are restarted; their supervisor loops
-# in mujina_display_startup.sh start the new files. The miner is restarted
-# only when BIN_DIR has a mujina-minerd that differs from the device's.
+# Only the display programs whose file changed are restarted; their
+# supervisor loops in mujina_display_startup.sh start the new files.
+# A changed miner REBOOTS the unit instead. Measured 2026-11-11: a miner
+# killed and restarted by its supervisor blocks forever at "connecting to
+# rtos_core" (v5.0.3 and v5.0.5 alike), and the startup script's watchdog did
+# not reboot it within 4 minutes. After a reboot it connects within 30 s.
+# The script then waits for the device and for the miner's IPC connection.
 #
 # Environment: NANO_SSH, the full ssh command for the device.
 set -eu
@@ -55,5 +59,28 @@ put() { # local-file device-path program-name-or-empty
 [ -n "$image" ] && put "$image" /data/reckless.rgb565 ""
 put "$bin/nano3s_ui" /data/nano3s_ui nano3s_ui
 put "$bin/fb_button" /mntapp/release/linux/app/fb_button fb_button
-[ -f "$bin/mujina-minerd" ] && put "$bin/mujina-minerd" /data/mujina-minerd mujina-minerd
+if [ -f "$bin/mujina-minerd" ]; then
+    before=$(dev_sum /data/mujina-minerd)
+    put "$bin/mujina-minerd" /data/mujina-minerd ""
+    if [ "$before" != "$(sum "$bin/mujina-minerd")" ]; then
+        echo "rebooting   the miner changed; a restart alone cannot reconnect to rtos_core"
+        $NANO_SSH "sync; reboot" || true
+        i=0; up=""
+        while [ $i -lt 60 ]; do
+            sleep 5; i=$((i + 1))
+            up=$($NANO_SSH "cut -d. -f1 /proc/uptime" 2>/dev/null || true)
+            [ -n "$up" ] && [ "$up" -lt 600 ] && break
+            up=""
+        done
+        [ -n "$up" ] || { echo "FAILED: device not back within 5 min" >&2; exit 1; }
+        i=0
+        while [ $i -lt 36 ]; do
+            if [ "$($NANO_SSH 'grep -c "ipc_shim\] connected" /data/mujina-minerd.log' 2>/dev/null || echo 0)" -gt 0 ]; then
+                echo "connected  mujina-minerd to rtos_core, device uptime ${up}s at boot check"; exit 0
+            fi
+            sleep 5; i=$((i + 1))
+        done
+        echo "FAILED: miner did not connect to rtos_core within 3 min of boot" >&2; exit 1
+    fi
+fi
 exit 0
