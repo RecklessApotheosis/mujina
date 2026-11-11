@@ -10,7 +10,13 @@ extern "C" {
     fn nano3s_ui_run() -> std::os::raw::c_int;
 }
 
+mod boot_page;
+
 fn main() {
+    boot_page::apply(
+        std::path::Path::new(boot_page::MARKER),
+        std::path::Path::new(boot_page::PAGE_FILE),
+    );
     let rc = unsafe { nano3s_ui_run() };
     std::process::exit(rc);
 }
