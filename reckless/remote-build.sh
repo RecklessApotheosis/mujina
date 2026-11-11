@@ -1,11 +1,11 @@
 #!/bin/sh
 # Build the Nano 3S Linux-side programs on a leased Dendrite build lane,
 # never on the machine this script is started from.
-#   usage: reckless/remote-build.sh OUT_DIR VENDOR_DIR [--miner DEPS_DIR]
+#   usage: reckless/remote-build.sh OUT_DIR DEPS_DIR [--miner]
+# DEPS_DIR is what reckless/fetch-deps.sh made.
 # Without --miner: fb_button and nano3s_ui (job reckless/sc-rust-build.sh).
 # With --miner: also mujina-minerd, which embeds those two (job
-# reckless/sc-rust-build-miner.sh). DEPS_DIR holds libudev-zero/ (source)
-# and ipcmsg/libipcmsg.a; see that job's header.
+# reckless/sc-rust-build-miner.sh).
 #
 # It sends the COMMITTED tree at HEAD (a dirty tree is refused, so the
 # record's commit is what was built), plus VENDOR_DIR (and DEPS_DIR), checks
@@ -21,8 +21,8 @@
 # for up to 10 minutes. All four lanes are one host, reached by one alias.
 # Lane tools and their rules: dendrite/working/tools/HOW-TO-REQUEST-A-LANE.md
 set -eu
-out=$(realpath -m "$1"); vendor=$(realpath "$2"); deps=""
-if [ "${3:-}" = --miner ]; then deps=$(realpath "$4"); fi
+out=$(realpath -m "$1"); deps=$(realpath "$2"); vendor=$deps/vendor
+miner=0; [ "${3:-}" = --miner ] && miner=1
 root=$(cd "$(dirname "$0")/.." && pwd)
 
 LANES=${NANO_BUILD_LANES:-supercomplex-build supercomplex-build2 supercomplex-build3 supercomplex-build4}
@@ -33,7 +33,7 @@ LANEDB=${LANEDB:-/home/ronald/projects/dendrite/working/supercomplex-build-20261
 SR=/srv/store/build/toolchains/bin/sc-rust
 remote() { ssh -o BatchMode=yes -o ConnectTimeout=8 "$HOST" "$@"; }
 T=riscv64gc-unknown-linux-gnu/release
-if [ -n "$deps" ]; then
+if [ $miner = 1 ]; then
     MINUTES=${NANO_BUILD_MINUTES:-30}; CPUS=12; MEM=32; job=reckless/sc-rust-build-miner.sh
     paths="target/$T/mujina-minerd.stripped target/display/nano3s_ui target/display/fb_button"
 else
@@ -45,7 +45,7 @@ fi
     || { echo "remote-build: commit or stash your changes first" >&2; exit 1; }
 commit=$(git -C "$root" rev-parse HEAD)
 branch=$(git -C "$root" rev-parse --abbrev-ref HEAD | tr '/' '-')
-build="nano3s-$([ -n "$deps" ] && echo miner || echo display)-$(echo "$commit" | cut -c1-12)"
+build="nano3s-$([ $miner = 1 ] && echo miner || echo display)-$(echo "$commit" | cut -c1-12)"
 who="mujina-nano3s/$branch"
 
 stage=$(mktemp -d); leased=0; put=0
@@ -61,7 +61,7 @@ trap cleanup EXIT
 # The source. Fixed order, owner and time, so the same inputs give the same
 # tar hash.
 mkdir "$stage/src"
-if [ -n "$deps" ]; then
+if [ $miner = 1 ]; then
     git -C "$root" archive "$commit" | tar -x -C "$stage/src"
     mkdir "$stage/src/deps"
     cp -a "$deps/libudev-zero" "$stage/src/deps/libudev-zero"
