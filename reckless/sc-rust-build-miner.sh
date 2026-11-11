@@ -34,7 +34,7 @@ sysroot=/w/sysroot/usr
 mkdir -p "$sysroot/lib/pkgconfig" "$sysroot/include"
 ( cd /w/deps/libudev-zero && make clean >/dev/null 2>&1 || true
   make CC=riscv64-linux-gnu-gcc AR=riscv64-linux-gnu-ar PREFIX="$sysroot" libudev.a libudev.pc
-  cp libudev.a "$sysroot/lib/" && cp libudev.pc "$sysroot/lib/pkgconfig/" && cp libudev.h "$sysroot/include/" )
+  cp libudev.a "$sysroot/lib/" && cp libudev.pc "$sysroot/lib/pkgconfig/" && cp udev.h "$sysroot/include/libudev.h" )
 
 # 3. Canaan's IPC library where mujina-miner/build.rs links it from.
 mkdir -p /w/rtos_core/vendor/sdk_libs
